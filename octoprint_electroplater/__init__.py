@@ -5,7 +5,7 @@ import octoprint.plugin
 import octoprint.events
 
 from dps5005 import Dps5005, Serial_modbus, Import_limits
-
+import piconzero as pump
 class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
     octoprint.plugin.SettingsPlugin,
     octoprint.plugin.AssetPlugin,
@@ -16,6 +16,7 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
         ser = Serial_modbus('/dev/ttyUSB1', 1, 9600, 8) #TODO: Catch error if we can't connect
         limits = Import_limits()
         self.psu = Dps5005(ser, limits)
+        pump.init()
 
     def on_after_startup(self):
         self._logger.info("ProjectQuine Electroplater %s Alive Now!", self._plugin_version)
@@ -39,7 +40,7 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
 
     def on_event(self, event, payload):
         
-        if event == "PrintDone": #and self._settings.get(["plate_after_print"]):
+        if event == "PrintDone" and self._settings.get(["plate_after_print"]):
             self._logger.info("Print ended, starting Plating process.")
             self._printer.set_temperature("bed", self._settings.get(["bed_temperature"]))
             # Set PSU Voltage & Current
