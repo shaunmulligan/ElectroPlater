@@ -1,10 +1,13 @@
 # coding=utf-8
 from __future__ import absolute_import
 import time
+from datetime import datetime, timedelta
 import octoprint.plugin
 import octoprint.events
+from octoprint.util import RepeatedTimer
 
 from dps5005 import Dps5005, Serial_modbus, Import_limits
+import piconzero as pz
 
 class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
     octoprint.plugin.SettingsPlugin,
@@ -13,14 +16,42 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
 ):
 
     def __init__(self):
-        ser = Serial_modbus('/dev/ttyUSB1', 1, 9600, 8) #TODO: Catch error if we can't connect
+        #TODO: create a udev rule to make sure ttyUSB* is always a specific name, or some other solution here
+        ser = Serial_modbus('/dev/ttyUSB2', 1, 9600, 8) #TODO: Catch error if we can't connect 
         limits = Import_limits()
         self.psu = Dps5005(ser, limits)
+        self.plate_timer = RepeatedTimer(60.0, self.fromTimer, run_first=True, condition=self.condition, on_condition_false=self.plating_done)
+        self.pump = pz
+        self.pump.init()
+        self.start_time = None
 
     def on_after_startup(self):
         self._logger.info("ProjectQuine Electroplater %s Alive Now!", self._plugin_version)
         self._logger.info("DPS5005 runnin version: %s", self.psu.version())
-        
+
+    ##~~ Timer handlers
+    def fromTimer (self):
+        self._logger.info("Periodic Timer fired")
+        self._logger.info("Plating at {} volts and currently drawing {} Amps".format(self.psu.voltage(), self.psu.current())) # TODO: Notifiy if there is no current draw
+        self._logger.info("Total Plating time is: {}".format(datetime.now() - self.start_time))
+        self._logger.info("##################################################")
+
+    def condition(self):
+        time_limit = timedelta(hours=int(self._settings.get(["plating_time"])))
+        return ((datetime.now() - self.start_time) < time_limit)
+
+    def plating_done(self):
+        self._logger.info("Maximum Plating time exceeded, shutting down")
+        #Stop PSU
+        self.psu.onoff(RWaction='w', value=0)
+        # Set the Bed temperature to 0
+        self._printer.set_temperature("bed", 0.0)
+        # Move Extruder head with anode out of solution
+
+        # Cleanup Pump objects
+        self.pump.cleanup()
+        self._logger.info("Electroplating ended at {}".format(datetime.now()))
+
     ##~~ SettingsPlugin mixin
 
     def get_settings_defaults(self):
@@ -30,6 +61,7 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
             plating_voltage = 1.00,
             max_current = 0.1,
             bed_temperature = 60,
+            solution_volume = 100,
         )
 
     def get_template_configs(self):
@@ -38,20 +70,46 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
     ##~~ EventPlugin API
 
     def on_event(self, event, payload):
-        
-        if event == "PrintDone": #and self._settings.get(["plate_after_print"]):
-            self._logger.info("Print ended, starting Plating process.")
-            self._printer.set_temperature("bed", self._settings.get(["bed_temperature"]))
-            # Set PSU Voltage & Current
-            self.psu.voltage_set(RWaction='w', value=float(self._settings.get(["plating_voltage"])))
-            self.psu.current_set(RWaction='w', value=float(self._settings.get(["max_current"])))
-            # Start PSU
-            self.psu.onoff(RWaction='w', value=1)
 
-            time.sleep(3)
-            # Read back current draw
-            current = self.psu.current()
-            self._logger.info("Plating currently drawing %f Amps", current) # TODO: Notifiy if there is no current draw
+        if event == "PrintDone":
+            self._logger.info("Does this print need to be electroplated? {}".format( "Yes" if self._settings.get(["plate_after_print"]) else "No"))
+            if self._settings.get(["plate_after_print"]):
+                # TODO: Check that our PSU, Pump are both connected and functional, if not: notify and error out
+                self._logger.info("Print ended, starting Plating process.")
+                volts = self._settings.get(["plating_voltage"])
+                amps = self._settings.get(["max_current"])
+                hours = self._settings.get(["plating_time"])
+                self._logger.info("Starting electroplating with {} volts @ max {} Amps for {} hours".format(volts,amps,hours))
+
+                # Set the Bed temperature
+                self._printer.set_temperature("bed", float(self._settings.get(["bed_temperature"])))
+                
+                # Set PSU Voltage & Current
+                print("PSU model is {} Volts".format(self.psu.model()))
+                self.psu.voltage_set(RWaction='w', value=float(self._settings.get(["plating_voltage"])))
+                time.sleep(3)
+                self.psu.current_set(RWaction='w', value=float(self._settings.get(["max_current"])))
+                
+                # Position Anode and pump pipe above model
+                # TODO: Move Extruder 1 to above center of print bed
+
+                # Fill the model's cup with electrolyte solution
+                self.pump.setMotor(1,-127)
+                time.sleep(2) # TODO: convert the ml volume in settings to time based on ~1.255ml/sec
+                self.pump.stop() 
+                self.pump.cleanup() # TODO: Clean this up on teardown of plugin
+
+                # Start PSU and Timer
+                self.psu.onoff(RWaction='w', value=1)
+                self._logger.info("Starting Plating timer...")
+                self.start_time = datetime.now()
+                self.plate_timer.start()
+
+                # Read back current draw
+                current = self.psu.current()
+                self._logger.info("Plating currently drawing %f Amps", current) # TODO: Notifiy if there is no current draw
+            else:
+                print("We don't need to plate this one!")
         
     ##~~ AssetPlugin mixin
 

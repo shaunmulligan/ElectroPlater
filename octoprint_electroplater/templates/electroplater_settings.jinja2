@@ -2,7 +2,7 @@
     <div class="control-group">
         <label class="control-label">{{ _('PLATE_AFTER_PRINT') }}</label>
         <div class="controls">
-            <input type="checkbox" class="input-block-level" data-bind="value: settings.plugins.electroplater.plate_after_print">
+            <input type="checkbox" class="input-block-level" data-bind="checked: settings.plugins.electroplater.plate_after_print">
         </div>
     </div>
     <div class="control-group">
@@ -27,6 +27,12 @@
         <label class="control-label">{{ _('BED_TEMPERATURE') }}</label>
         <div class="controls">
             <input type="number" step="any" min="0" class="input-block-level" data-bind="value: settings.plugins.electroplater.bed_temperature">
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">{{ _('SOLUTION_VOLUME') }}</label>
+        <div class="controls">
+            <input type="number" step="any" min="0" class="input-block-level" data-bind="value: settings.plugins.electroplater.solution_volume">
         </div>
     </div>
 </form>
