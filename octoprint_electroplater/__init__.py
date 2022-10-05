@@ -17,10 +17,10 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
 
     def __init__(self):
         #TODO: create a udev rule to make sure ttyUSB* is always a specific name, or some other solution here
-        ser = Serial_modbus('/dev/ttyUSB2', 1, 9600, 8) #TODO: Catch error if we can't connect 
+        ser = Serial_modbus('/dev/ttyUSB0', 1, 9600, 8) #TODO: Catch error if we can't connect 
         limits = Import_limits()
         self.psu = Dps5005(ser, limits)
-        self.plate_timer = RepeatedTimer(60.0, self.fromTimer, run_first=True, condition=self.condition, on_condition_false=self.plating_done)
+        self.plate_timer = RepeatedTimer(60.0, self.fromTimer, condition=self.condition, on_condition_false=self.plating_done)
         self.pump = pz
         self.pump.init()
         self.start_time = None
@@ -37,7 +37,7 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
         self._logger.info("##################################################")
 
     def condition(self):
-        time_limit = timedelta(hours=int(self._settings.get(["plating_time"])))
+        time_limit = timedelta(minutes=int(self._settings.get(["plating_time"])))
         return ((datetime.now() - self.start_time) < time_limit)
 
     def plating_done(self):
@@ -47,6 +47,7 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
         # Set the Bed temperature to 0
         self._printer.set_temperature("bed", 0.0)
         # Move Extruder head with anode out of solution
+        self._printer.commands(["T1","G1 Z50", "G1 X362"])
 
         # Cleanup Pump objects
         self.pump.cleanup()
@@ -85,19 +86,30 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
                 self._printer.set_temperature("bed", float(self._settings.get(["bed_temperature"])))
                 
                 # Set PSU Voltage & Current
-                print("PSU model is {} Volts".format(self.psu.model()))
+                self._logger.info("PSU model is {}".format(self.psu.model()))
                 self.psu.voltage_set(RWaction='w', value=float(self._settings.get(["plating_voltage"])))
                 time.sleep(3)
                 self.psu.current_set(RWaction='w', value=float(self._settings.get(["max_current"])))
                 
                 # Position Anode and pump pipe above model
-                # TODO: Move Extruder 1 to above center of print bed
+                # switch to T1 extruder and move it to x125 and y195
+                self._printer.commands("G90") # set absolute positioning mode
+                self._printer.commands("T0") # select first extruder
+                #self._printer.commands("G1 X ") # move the T0 inwards so it doesn't grind endstop
+                self._printer.commands("T1")
+                self._printer.commands("G1 X125 Y195")
+                
+                self._logger.info("Pausing to allow extruder to position")
+                time.sleep(20) # Pause to allow the extruder to position itself
 
                 # Fill the model's cup with electrolyte solution
+                self._logger.info("Filling cup with solution")
                 self.pump.setMotor(1,-127)
                 time.sleep(2) # TODO: convert the ml volume in settings to time based on ~1.255ml/sec
                 self.pump.stop() 
-                self.pump.cleanup() # TODO: Clean this up on teardown of plugin
+                # Cleanup Pump objects
+                self.pump.cleanup()
+                self._logger.info("Stopped pump")
 
                 # Start PSU and Timer
                 self.psu.onoff(RWaction='w', value=1)
@@ -105,9 +117,6 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
                 self.start_time = datetime.now()
                 self.plate_timer.start()
 
-                # Read back current draw
-                current = self.psu.current()
-                self._logger.info("Plating currently drawing %f Amps", current) # TODO: Notifiy if there is no current draw
             else:
                 print("We don't need to plate this one!")
         
