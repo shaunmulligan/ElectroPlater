@@ -12,12 +12,13 @@ import piconzero as pz
 class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
     octoprint.plugin.SettingsPlugin,
     octoprint.plugin.AssetPlugin,
-    octoprint.plugin.TemplatePlugin
+    octoprint.plugin.TemplatePlugin,
+    octoprint.plugin.ShutdownPlugin
 ):
 
     def __init__(self):
         #TODO: create a udev rule to make sure ttyUSB* is always a specific name, or some other solution here
-        ser = Serial_modbus('/dev/ttyUSB0', 1, 9600, 8) #TODO: Catch error if we can't connect 
+        ser = Serial_modbus('/dev/dps5005', 1, 9600, 8) #TODO: Catch error if we can't connect 
         limits = Import_limits()
         self.psu = Dps5005(ser, limits)
         self.plate_timer = RepeatedTimer(60.0, self.fromTimer, condition=self.condition, on_condition_false=self.plating_done)
@@ -28,6 +29,11 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
     def on_after_startup(self):
         self._logger.info("ProjectQuine Electroplater %s Alive Now!", self._plugin_version)
         self._logger.info("DPS5005 runnin version: %s", self.psu.version())
+    
+    def on_shutdown(self):
+        self.pump.stop()
+        # Cleanup Pump objects
+        self.pump.cleanup()
 
     ##~~ Timer handlers
     def fromTimer (self):
@@ -37,7 +43,7 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
         self._logger.info("##################################################")
 
     def condition(self):
-        time_limit = timedelta(minutes=int(self._settings.get(["plating_time"])))
+        time_limit = timedelta(hours=int(self._settings.get(["plating_time"])))
         return ((datetime.now() - self.start_time) < time_limit)
 
     def plating_done(self):
@@ -58,11 +64,12 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
     def get_settings_defaults(self):
         return dict(
             plate_after_print = False,
-            plating_time = 6,
+            plating_time = 6, # Number of hours to plate for
             plating_voltage = 1.00,
-            max_current = 0.1,
+            max_current = 0.1, # Maximum allowed current in Amps
             bed_temperature = 60,
             solution_volume = 100,
+            cup_height = 25, # Height of full print in mm
         )
 
     def get_template_configs(self):
@@ -94,25 +101,39 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
                 # Position Anode and pump pipe above model
                 # switch to T1 extruder and move it to x125 and y195
                 self._printer.commands("G90") # set absolute positioning mode
-                self._printer.commands("T0") # select first extruder
-                #self._printer.commands("G1 X ") # move the T0 inwards so it doesn't grind endstop
-                self._printer.commands("T1")
-                self._printer.commands("G1 X125 Y195")
-                
+                # self._printer.commands("T0") # select first extruder
+                # Deploy the annode
+                self._printer.commands("T1") # Select second extruder with anode and pump
+                self._printer.commands("G1 X340") # Move extruder beneath bump ledge
+                self._printer.commands("G1 Z329") # Move up to bump into latch position
+                self._printer.commands("G1 Z300") # Move up to bump into latch position
+                self._printer.commands("G1 X197 Y172") # Position anode at center of build plate
                 self._logger.info("Pausing to allow extruder to position")
-                time.sleep(20) # Pause to allow the extruder to position itself
-
+                self._printer.commands("G1 Z{}".format(int(self._settings.get(["cup_height"]))-5))
+                time.sleep(180) # Pause to allow the extruder to position itself
+                
+                self._logger.info("Powering Up PSU")
+                self.psu.onoff(RWaction='w', value=1) # Apply power to the electroplating circuit
                 # Fill the model's cup with electrolyte solution
-                self._logger.info("Filling cup with solution")
-                self.pump.setMotor(1,-127)
-                time.sleep(2) # TODO: convert the ml volume in settings to time based on ~1.255ml/sec
-                self.pump.stop() 
-                # Cleanup Pump objects
-                self.pump.cleanup()
-                self._logger.info("Stopped pump")
+                self._logger.info("Starting Solution pump")
+                
+                while True:
+                    # Run a loop until we detect current flow in our anode
+                    current = self.psu.current()
+                    self._logger.info("Plating at {} volts and currently drawing {} Amps".format(self.psu.voltage(), current))
+                    if float(current) == 0.0: # TODO: We need some fail safe here or a timeout
+                        self.pump.setMotor(1,-127) # TODO: convert the ml volume in settings to time based on ~1.255ml/sec
+                        time.sleep(2)
+                    else:
+                        self._logger.info("Current is flowing...")
+                        self.pump.stop() # Stop the pump
+                        self.pump.cleanup() # Cleanup Pump objects
+                        self._logger.info("Stopped pump")
+                        break
 
-                # Start PSU and Timer
-                self.psu.onoff(RWaction='w', value=1)
+                # Move the anode down 10mm into cup
+                self._printer.commands("G1 Z{}".format(int(self._settings.get(["cup_height"]))-10))
+                # Start Timer
                 self._logger.info("Starting Plating timer...")
                 self.start_time = datetime.now()
                 self.plate_timer.start()
