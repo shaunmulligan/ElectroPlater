@@ -54,7 +54,7 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
         self._printer.set_temperature("bed", 0.0)
         # Move Extruder head with anode out of solution
         self._printer.commands(["T1","G1 Z50", "G1 X362"])
-
+        
         # Cleanup Pump objects
         self.pump.cleanup()
         self._logger.info("Electroplating ended at {}".format(datetime.now()))
@@ -109,7 +109,7 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
                 self._printer.commands("G1 Z300") # Move up to bump into latch position
                 self._printer.commands("G1 X197 Y172") # Position anode at center of build plate
                 self._logger.info("Pausing to allow extruder to position")
-                self._printer.commands("G1 Z{}".format(int(self._settings.get(["cup_height"]))-5))
+                self._printer.commands("G1 Z{}".format(int(self._settings.get(["cup_height"]))+5))
                 time.sleep(180) # Pause to allow the extruder to position itself
                 
                 self._logger.info("Powering Up PSU")
@@ -132,7 +132,7 @@ class ElectroplaterPlugin(octoprint.plugin.EventHandlerPlugin,
                         break
 
                 # Move the anode down 10mm into cup
-                self._printer.commands("G1 Z{}".format(int(self._settings.get(["cup_height"]))-10))
+                self._printer.commands("G1 Z{}".format(int(self._settings.get(["cup_height"]))))
                 # Start Timer
                 self._logger.info("Starting Plating timer...")
                 self.start_time = datetime.now()
